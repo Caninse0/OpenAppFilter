@@ -26,6 +26,7 @@
 #include "fwx_feature.h"
 #include "fwx_feature_online.h"
 #include "fwx_custom_feature.h"
+#include "fwx_custom_rule.h"
 #include <uci.h>
 #include "fwx.h"
 #include "fwx_utils.h"
@@ -6450,6 +6451,7 @@ static struct json_object *get_dashboard_oaf_status(struct json_object *system_s
     char buf[128] = {0};
     int work_mode = -1;
     int record_enable = 0;
+    int custom_rule_only_mode = 0;
 
     (void)system_status;
     if (read_file_buf("/etc/oaf_version", version, sizeof(version)) > 0) {
@@ -6482,6 +6484,13 @@ static struct json_object *get_dashboard_oaf_status(struct json_object *system_s
 
     json_object_object_add(oaf_status, "app_record_count", json_object_new_int(count_app_visit_record_rows()));
     json_object_object_add(oaf_status, "feature", build_feature_info_object());
+
+    memset(buf, 0, sizeof(buf));
+    if (read_file_buf("/proc/sys/fwx/custom_rule_only_mode", buf, sizeof(buf)) > 0) {
+        str_trim(buf);
+        custom_rule_only_mode = atoi(buf);
+    }
+    json_object_object_add(oaf_status, "custom_rule_only_mode", json_object_new_int(custom_rule_only_mode));
 
     return oaf_status;
 }
@@ -8468,6 +8477,17 @@ struct json_object *fwx_api_set_dashboard_param(struct json_object *req_obj) {
     return fwx_gen_api_response_data(API_CODE_SUCCESS, NULL);
 }
 
+struct json_object *fwx_api_reload_custom_rule(struct json_object *req_obj)
+{
+    (void)req_obj;
+
+    /* the reload itself happens on the next timer tick, so the LuCI page
+     * does not have to wait for the feature library to be re-pushed */
+    fwx_custom_rule_request_reload();
+    LOG_WARN("custom rule reload requested\n");
+    return fwx_gen_api_response_data(API_CODE_SUCCESS, NULL);
+}
+
 typedef struct json_object * (*fwx_api_handler)(struct json_object *data_obj);
 
 typedef enum {
@@ -8577,6 +8597,7 @@ static fwx_api_node_t fwx_api_node_list[] = {
     {"get_custom_feature", fwx_api_get_custom_feature, 0, FWX_API_METHOD_GET},
     {"get_custom_feature_class_list", fwx_api_get_custom_feature_class_list, 0, FWX_API_METHOD_GET},
     {"set_custom_feature", fwx_api_set_custom_feature, 0, FWX_API_METHOD_POST},
+    {"reload_custom_rule", fwx_api_reload_custom_rule, 0, FWX_API_METHOD_POST},
     {"get_feature_info", fwx_api_get_feature_info, 0, FWX_API_METHOD_GET},
     {"get_feature_online_config", fwx_api_get_feature_online_config, 0, FWX_API_METHOD_GET},
     {"set_feature_online_config", fwx_api_set_feature_online_config, 0, FWX_API_METHOD_POST},

@@ -32,6 +32,9 @@ config global global
 	option tcp_rst '1'
 	option theme_mode '1'
 	option feature_token ''
+	option custom_rule_enable '1'
+	option custom_rule_follow_appfilter '0'
+	option custom_rule_max_num '500'
 
 config appfilter appfilter
 	option enable 1

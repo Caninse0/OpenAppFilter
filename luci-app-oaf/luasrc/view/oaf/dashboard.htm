@@ -1424,6 +1424,10 @@
                     <span class="compact-label"><%:App Record Count%></span>
                     <span class="compact-value" id="oaf-app-record-count">--</span>
                 </div>
+                <div class="compact-row" id="oaf-custom-rule-row" style="display:none;">
+                    <span class="compact-label"><%:Custom Rules%></span>
+                    <span class="compact-value" id="oaf-custom-rule-mode">--</span>
+                </div>
             </div>
         </div>
         <div class="mini" id="running-status-card" style="display:none;">
@@ -1543,6 +1547,7 @@
     var _KernelVersion = '<%:Kernel Version%>';
     var _Uptime = '<%:Uptime%>';
     var _RunningStatus = '<%:Running Status%>';
+    var _CustomRuleOnlyMode = '<%:Custom rules only%>';
     var _Memory = '<%:Memory%>';
     var _Network = '<%:Network%>';
     var _PortStatus = '<%:Port Status%>';
@@ -2169,6 +2174,13 @@
         setCompactValue('oaf-work-mode', formatWorkMode(oaf.work_mode));
         setCompactValue('oaf-feature-version', feature.version || '--');
         setCompactValue('oaf-app-record-count', oaf.app_record_count === undefined ? 0 : oaf.app_record_count);
+
+        if (parseInt(oaf.custom_rule_only_mode, 10) === 1) {
+            setCompactValue('oaf-custom-rule-mode', _CustomRuleOnlyMode);
+            $('#oaf-custom-rule-row').show();
+        } else {
+            $('#oaf-custom-rule-row').hide();
+        }
 
         if(sys.total_mem !== undefined) {
             $('#sys-mem-total').text(formatMemory(sys.total_mem));

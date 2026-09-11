@@ -16,6 +16,7 @@ extern int g_user_mode;
 extern char g_lan_ifname[64];
 extern int g_tcp_rst;
 extern int g_feature_count;
+extern int g_custom_rule_only_mode;
 
 #define TEST_MODE() (fwx_test_mode)
 int af_log_init(void);

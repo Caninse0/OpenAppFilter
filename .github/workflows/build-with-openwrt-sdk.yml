@@ -1,0 +1,276 @@
+#
+# Copyright (c) 2026 OpenAppFilter
+# Description: Manual build OpenAppFilter packages (kmod-oaf / appfilter / luci-app-oaf)
+#              with the official OpenWrt SDK, based on the pattern of
+#              openwrt-passwall2 "Auto compile with openwrt sdk"
+#
+name: "Auto compile with openwrt sdk"
+
+on:
+  # push:
+  #   branches: [ "master" ]
+  workflow_dispatch:
+    inputs:
+      openwrt_version:
+        description: 'OpenWrt version: snapshots, 25.12.2, ...'
+        required: true
+        default: '25.12.4'
+        type: choice
+        options:
+          - snapshots
+          - 25.12.5
+          - 25.12.4
+          - 25.12.3
+          - 25.12.2
+          - 25.12.1
+
+      target:
+        description: 'Target platform (target/subtarget), e.g. x86/64'
+        required: true
+        default: 'rockchip/armv8'
+        type: choice
+        options:
+          - x86/64
+          - x86/generic
+          - rockchip/armv8
+          - ramips/mt7621
+          - ramips/mt76x8
+          - mediatek/mt7622
+          - mediatek/filogic
+          - ipq40xx/generic
+          - ipq807x/generic
+          - bcm27xx/bcm2711
+          - mvebu/cortexa53
+          - mvebu/cortexa72
+          - sunxi/cortexa53
+          - ath79/generic
+          - octeon/generic
+      custom_sdk_url:
+        description: 'Custom OpenWrt SDK URL (overrides version/target, for platforms/versions not listed above)'
+        required: false
+        default: ''
+      release_tag:
+        description: 'Upload artifacts to this GitHub release tag (empty = artifacts only)'
+        required: false
+        default: ''
+      ssh:
+        description: 'SSH connection to Actions for debugging'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+env:
+  TZ: Asia/Shanghai
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  job_build:
+    name: Build OAF [${{ inputs.target || 'rockchip/armv8' }} / ${{ inputs.openwrt_version || '25.12.4' }}]
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Install packages
+        run: |
+          sudo -E rm -rf /usr/share/dotnet /etc/mysql /etc/php /usr/local/lib/android
+          echo "Install packages"
+          sudo -E apt-get -qq update
+          sudo -E apt-get -qq install ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
+            bzip2 ccache clang cmake cpio curl device-tree-compiler ecj fastjar flex gawk gettext gcc-multilib \
+            g++-multilib git gnutls-dev gperf haveged help2man intltool lib32gcc-s1 libc6-dev-i386 libelf-dev \
+            libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses-dev libpython3-dev \
+            libreadline-dev libssl-dev libtool libyaml-dev libz-dev lld llvm lrzsz mkisofs msmtp nano \
+            ninja-build p7zip p7zip-full patch pkgconf python3 python3-pip python3-ply python3-docutils \
+            python3-pyelftools qemu-utils re2c rsync scons squashfs-tools subversion swig texinfo uglifyjs \
+            upx-ucl unzip vim wget xmlto xxd zlib1g-dev zstd
+          sudo -E apt-get -qq autoremove --purge
+          sudo -E apt-get -qq clean
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Resolve OpenWrt SDK URL
+        id: sdk
+        run: |
+          if [ -n "${{ inputs.custom_sdk_url }}" ]; then
+            sdk_url="${{ inputs.custom_sdk_url }}"
+            echo "Using custom SDK URL"
+          else
+            OWRT_VERSION="${{ inputs.openwrt_version || '25.12.4' }}"
+            OWRT_TARGET="${{ inputs.target || 'rockchip/armv8' }}"
+            echo "OWRT_VERSION=${OWRT_VERSION}" >> "$GITHUB_ENV"
+            echo "OWRT_TARGET=${OWRT_TARGET}" >> "$GITHUB_ENV"
+            if [ "${OWRT_VERSION}" = "snapshots" ]; then
+              base_url="https://downloads.openwrt.org/${OWRT_VERSION}/targets/${OWRT_TARGET}/"
+            else
+              base_url="https://downloads.openwrt.org/releases/${OWRT_VERSION}/targets/${OWRT_TARGET}/"
+            fi
+            sdk_file=$(curl -s "$base_url" | grep -oE 'openwrt-sdk-[^"<>]*\.tar\.(zst|xz)' | sort -u | tail -n1)
+            if [ -z "$sdk_file" ]; then
+              echo "::error::No OpenWrt SDK found at $base_url, check version/target or provide a custom SDK URL."
+              exit 1
+            fi
+            sdk_url="${base_url}${sdk_file}"
+          fi
+          echo "SDK_URL=${sdk_url}" >> "$GITHUB_ENV"
+          echo "SDK_FILE=$(basename "${sdk_url}")" >> "$GITHUB_ENV"
+
+      - name: Download and extract SDK
+        run: |
+          wget -q "$SDK_URL"
+          mkdir sdk
+          file_name="$SDK_FILE"
+          if [[ $file_name == *.tar.xz ]]; then
+            sudo tar -xJf "$file_name" -C ./sdk --strip-components=1
+          elif [[ $file_name == *.tar.zst ]]; then
+            sudo tar --zstd -x -f "$file_name" -C ./sdk --strip-components=1
+          else
+            echo "::error::Unsupported SDK format: $file_name"
+            exit 1
+          fi
+          echo "SDK extracted"
+
+      - name: Configure feeds
+        run: |
+          sudo chmod 777 -R sdk
+          cd sdk
+          # Update feeds to github source
+          sed -i \
+              -e 's|git\.openwrt\.org/feed|github.com/openwrt|g' \
+              -e 's|git\.openwrt\.org/project|github.com/openwrt|g' \
+              -e 's|git\.openwrt\.org/openwrt|github.com/openwrt|g' \
+              "feeds.conf.default"
+
+          # Pin packages/luci feeds to the branch matching the selected OpenWrt version
+          branch="master"
+          OWRT_VERSION="${{ inputs.openwrt_version || '25.12.4' }}"
+          case "${OWRT_VERSION}" in
+            25.12*) branch="openwrt-25.12" ;;
+            24.10*) branch="openwrt-24.10" ;;
+          esac
+          echo "Pin feeds to branch: $branch"
+          sed -i -E "s|^(src-git(-full)? packages )https://github\.com/openwrt/packages\.git.*$|\1https://github.com/openwrt/packages.git;$branch|" feeds.conf.default
+          sed -i -E "s|^(src-git(-full)? luci )https://github\.com/openwrt/luci\.git.*$|\1https://github.com/openwrt/luci.git;$branch|" feeds.conf.default
+
+          # Link this repository as a local feed (builds the current checkout)
+          echo "src-link oaf $GITHUB_WORKSPACE" >> feeds.conf.default
+          cat feeds.conf.default
+          ./scripts/feeds update -a
+          ./scripts/feeds update -i
+          ./scripts/feeds install -a
+
+      # - name: SSH connection to Actions
+      #   uses: mxschmitt/action-tmate@v3
+      #   if: inputs.ssh == 'true'
+
+      - name: Configure .config
+        run: |
+          cd sdk
+          echo "CONFIG_PACKAGE_luci-app-oaf=m" > .config
+          echo "CONFIG_LUCI_LANG_zh_Hans=y" >> .config
+          make defconfig
+          # make package/base-files/compile -j$(nproc)
+          # make prepare
+
+
+      - name: SSH connection to Actions
+        uses: mxschmitt/action-tmate@v3
+        if: inputs.ssh == 'true'
+
+      - name: Compile OAF packages
+        id: compile
+        run: |
+          cd sdk
+          if [ ! -d package/feeds/oaf ]; then
+            echo "::error::OAF feed is not installed. Check the 'Configure feeds' step log."
+            exit 1
+          fi
+
+          echo "========== compile kmod-oaf =========="
+          sudo make package/oaf/compile -j$(nproc) V=s
+          echo "========== compile appfilter (oafd) =========="
+          sudo make package/open-app-filter/compile -j$(nproc) V=s
+          echo "========== compile luci-app-oaf =========="
+          sudo make package/luci-app-oaf/compile -j$(nproc) V=s || sudo make package/luci-app-oaf/compile -j1 V=s
+          sudo chmod 777 -R .
+          echo "status=success" >> "$GITHUB_OUTPUT"
+
+      - name: Organize artifacts
+        id: organize
+        if: steps.compile.outputs.status == 'success'
+        run: |
+          cd sdk
+          mkdir -p upload
+          if [ ! -d bin/packages ]; then
+            echo "::error::bin/packages not found - no package was produced. Look at the 'Compile OAF packages' step log for the real make error."
+            exit 1
+          fi
+
+          # kmod-oaf 位于 bin/targets/<target>/<subtarget>/packages/ 下
+          # appfilter/luci-app-oaf 位于 bin/packages/<arch>/<feed>/ 下
+          # APK 包名使用连字符(-)而非下划线(_)分隔版本号
+          find bin/packages bin/targets -type f \( \
+            -name "kmod-oaf-*.apk" \
+            -o -name "*appfilter-*.apk" \
+            -o -name "luci-app-oaf-*.apk" \
+            -o -name "luci-i18n-oaf-*.apk" \
+          \) -exec cp {} upload/ \;
+          echo "Built packages:"
+          ls -la upload/
+
+          kernel_ver=$(grep -m1 '^LINUX_VERSION[[:space:]]*:=' include/kernel-version.mk | awk '{print $3}')
+          [ -z "$kernel_ver" ] && kernel_ver="unknown"
+          OWRT_VERSION="${{ inputs.openwrt_version || '25.12.4' }}"
+          OWRT_TARGET="${{ inputs.target || 'rockchip/armv8' }}"
+          cat > upload/build_info.txt <<EOF
+          Repository: ${{ github.repository }} @ ${{ github.sha }}
+          Built At: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          OpenWrt Version: ${OWRT_VERSION}
+          Target: ${OWRT_TARGET}
+          Kernel Version: ${kernel_ver}
+          SDK URL: ${SDK_URL}
+          Packages: kmod-oaf (kernel DPI module), appfilter (oafd daemon), luci-app-oaf (LuCI UI)
+          Note: kmod-oaf is kernel-version specific, install it only on a matching OpenWrt firmware.
+          EOF
+
+          apk_count=$(ls upload/*.apk 2>/dev/null | wc -l)
+          if [ "$apk_count" -eq 0 ]; then
+            echo "::error::No apk packages were built, check the compile step output."
+            exit 1
+          fi
+
+          target_safe=$(echo "${OWRT_TARGET}" | tr '/' '-')
+          echo "TARGET_SAFE=$target_safe" >> "$GITHUB_ENV"
+          echo "status=success" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifacts
+        if: steps.organize.outputs.status == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          name: oaf-${{ env.TARGET_SAFE }}-${{ inputs.openwrt_version || '25.12.4' }}
+          path: |
+            sdk/upload/*.apk
+            sdk/upload/build_info.txt
+          if-no-files-found: error
+
+      - name: Upload to GitHub Release
+        if: steps.organize.outputs.status == 'success' && inputs.release_tag != ''
+        uses: softprops/action-gh-release@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          files: |
+            sdk/upload/*.apk
+          body: |
+            OpenAppFilter packages built with OpenWrt SDK
+            - OpenWrt: ${{ inputs.openwrt_version || '25.12.4' }}
+            - Target: ${{ inputs.target || 'rockchip/armv8' }}
+            - Commit: ${{ github.sha }}

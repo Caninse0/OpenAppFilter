@@ -27,6 +27,7 @@
 #include "fwx_feature.h"
 #include "fwx_feature_online.h"
 #include "fwx_custom_feature.h"
+#include "fwx_custom_rule.h"
 
 int current_log_level = LOG_LEVEL_WARN;
 //int current_log_level = LOG_LEVEL_INFO;
@@ -273,6 +274,8 @@ int reload_feature(void){
         LOG_ERROR("Failed to load feature to kernel\n");
         return -1;
     }
+    update_custom_rule_state();
+    load_custom_rules();
     if (write_feature_info_file() < 0)
         LOG_ERROR("Failed to write feature info file\n");
     LOG_WARN("reload feature success\n");
@@ -384,6 +387,12 @@ void fwx_timeout_handler(struct uloop_timeout *t)
 
             system("killall -9 rule_manager");
             LOG_INFO("netlink connect success\n");
+        }
+    }
+
+    if (count % 5 == 0 && fwx_nl_fd.fd > 0){
+        if (update_custom_rule_state()){
+            g_feature_update = 1;
         }
     }
 

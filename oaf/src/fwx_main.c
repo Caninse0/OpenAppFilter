@@ -95,7 +95,8 @@ static inline u_int32_t fwx_ct_get_appid(const struct nf_conn *ct)
 
 static inline int fwx_ct_is_valid_appid(u_int32_t app_id)
 {
-	return app_id > 0 && app_id <= 32000;
+	return (app_id > 0 && app_id <= 32000) ||
+	       (app_id >= AF_CUSTOM_RULE_APPID_BASE && app_id < AF_CUSTOM_RULE_APPID_MAX);
 }
 
 static inline void fwx_ct_set_appid(struct nf_conn *ct, u_int32_t app_id)
@@ -934,7 +935,7 @@ int add_app_feature(int appid, char *name, char *feature)
 	char src_port_str[16] = {0};
 	port_info_t dport_info;
 	char dst_port_str[16] = {0};
-	char host_url[32] = {0};
+	char host_url[MAX_HOST_URL_LEN] = {0};
 	char request_url[128] = {0};
 	char dict[128] = {0};
 	int proto = IPPROTO_TCP;
@@ -1925,14 +1926,28 @@ int dpi_dns_proto(flow_info_t *flow)
 
 int match_app_filter_rule(int appid, af_client_info_t *client)
 {
+	int is_custom_rule = (appid >= AF_CUSTOM_RULE_APPID_BASE && appid < AF_CUSTOM_RULE_APPID_MAX);
 
-	if (!g_appfilter_enable) {
+	/* Custom rules are pushed by oafd only when they are supposed to take
+	 * effect, so the appfilter_enable switch must not suppress them. */
+	if (!is_custom_rule && !g_appfilter_enable) {
 		return AF_FALSE;
 	}
 	
 	if (fwx_match_app_filter_whitelist(client->mac)){
 		AF_LMT_DEBUG("match appfilter whitelist mac = " MAC_FMT "\n", MAC_ARRAY(client->mac));
 		return AF_FALSE;
+	}
+
+	/* Only custom rules are in effect: suspend every library based rule. */
+	if (g_custom_rule_only_mode && !is_custom_rule) {
+		AF_LMT_DEBUG("custom rule only mode, skip appid = %d\n", appid);
+		return AF_FALSE;
+	}
+
+	if (is_custom_rule) {
+		AF_LMT_INFO("match custom rule appid = %d\n", appid);
+		return AF_TRUE;
 	}
 
 	app_filter_rule_t *rule = fwx_match_app_filter_rule(appid, client->mac);
@@ -2258,7 +2273,7 @@ u_int32_t fwx_hook_bypass_handle(struct sk_buff *skb, struct net_device *dev)
 	spin_unlock(&af_conn_lock);
 
 
-	if (conn->app_id == 0 && conn->drop == 1){
+	if (conn->app_id == 0 && conn->drop == 1 && !g_custom_rule_only_mode){
 		//send_reset_packet(skb, &flow);
 		return NF_DROP;
 	}
@@ -2266,8 +2281,14 @@ u_int32_t fwx_hook_bypass_handle(struct sk_buff *skb, struct net_device *dev)
 	{
 		flow.app_id = conn->app_id;
 		flow.drop = conn->drop;
+		if (g_custom_rule_only_mode &&
+			(flow.app_id < AF_CUSTOM_RULE_APPID_BASE ||
+			 flow.app_id >= AF_CUSTOM_RULE_APPID_MAX)){
+			flow.drop = 0;
+			conn->drop = 0;
+		}
 		if (flow.app_id > 1000){
-			if (check_app_action_changed(flow.drop, flow.app_id, client)){
+			if (!conn->ignore && check_app_action_changed(flow.drop, flow.app_id, client)){
 				flow.drop = !flow.drop;
 				AF_LMT_DEBUG("update appid %d action, new action = %s\n", flow.app_id, flow.drop ? "drop" : "accept");
 			}
@@ -2316,7 +2337,7 @@ u_int32_t fwx_hook_bypass_handle(struct sk_buff *skb, struct net_device *dev)
 			conn->state = AF_CONN_DPI_FINISHED;
 			if (!conn->ignore && !is_record_whitelist)
 				af_update_active_app_list(client, &flow);
-			if (match_app_filter_rule(flow.app_id, client)) {
+			if (!conn->ignore && match_app_filter_rule(flow.app_id, client)) {
 				flow.drop = 1;
 				conn->drop = 1;
 				AF_LMT_INFO("##Drop App filter rule, appid = %d, mac = " MAC_FMT "\n", 
@@ -2420,27 +2441,35 @@ u_int32_t fwx_hook_gateway_handle(struct sk_buff *skb, struct net_device *dev)
 
 
 		if (app_id > 0 && app_id < 1000){
-			if (g_appfilter_enable && ct_action) {
+			if (g_appfilter_enable && ct_action && !g_custom_rule_only_mode) {
 				AF_LMT_DEBUG("ct drop appid = %d\n", app_id);
 				return NF_DROP;
 			}
 		}
 
-		if (app_id > 1000 && app_id <= 32000)
+		if ((app_id > 1000 && app_id <= 32000) ||
+			(app_id >= AF_CUSTOM_RULE_APPID_BASE && app_id < AF_CUSTOM_RULE_APPID_MAX))
 		{
-			if (check_app_action_changed(ct_action, app_id, client)){
+			/* Only custom rules are in effect: drop the library based verdict. */
+			if (g_custom_rule_only_mode &&
+				(app_id < AF_CUSTOM_RULE_APPID_BASE ||
+				 app_id >= AF_CUSTOM_RULE_APPID_MAX)){
+				fwx_ct_set_bit(ct, FWX_CT_DROP_BIT, 0);
+				ct_action = 0;
+			}
+			if (!flow.ignore && check_app_action_changed(ct_action, app_id, client)){
 				ct_action = !ct_action;
 				fwx_ct_set_bit(ct, FWX_CT_DROP_BIT, ct_action);
 				AF_LMT_DEBUG("update appid %d action to %s, action = %d-->%d\n",
 					 app_id, ct_action ? "drop" : "accept", orig_action, ct_action);
 			}
-		
+	
 			if (g_record_enable){
 				if (!flow.ignore && !is_record_whitelist){
 					af_update_client_app_info(client, app_id, ct_action, 1, 0, !fwx_ct_test_bit(ct, FWX_CT_DNS_MATCH_BIT));
 				}
 			}
-			if (g_appfilter_enable && ct_action) {
+			if (g_appfilter_enable && ct_action && !g_custom_rule_only_mode) {
 				AF_LMT_DEBUG("drop appid = %d, ct_action = %d\n", app_id, ct_action);
 				return NF_DROP;
 			}
@@ -2449,11 +2478,20 @@ u_int32_t fwx_hook_gateway_handle(struct sk_buff *skb, struct net_device *dev)
 	}
 
 	if (fwx_ct_test_bit(ct, FWX_CT_DROP_BIT)){
-		if (fwx_ct_has_valid_drop_mark(ct)) {
+		int custom_mark = (app_id >= AF_CUSTOM_RULE_APPID_BASE &&
+				   app_id < AF_CUSTOM_RULE_APPID_MAX);
+
+		if (g_custom_rule_only_mode && !custom_mark) {
+			AF_LMT_DEBUG("custom rule only mode, ignore ct drop mark = 0x%x\n",
+				     fwx_ct_mark_get(ct));
+		}
+		else if (fwx_ct_has_valid_drop_mark(ct)) {
 			AF_LMT_DEBUG("ct drop, mark = 0x%x\n", fwx_ct_mark_get(ct));
 			return NF_DROP;
 		}
-		AF_LMT_DEBUG("ignore invalid ct drop mark, mark = 0x%x\n", fwx_ct_mark_get(ct));
+		else {
+			AF_LMT_DEBUG("ignore invalid ct drop mark, mark = 0x%x\n", fwx_ct_mark_get(ct));
+		}
 	}
 
 	app_id = fwx_ct_get_appid(ct);
@@ -2508,7 +2546,7 @@ u_int32_t fwx_hook_gateway_handle(struct sk_buff *skb, struct net_device *dev)
 			AF_LMT_DEBUG("gateway set ignore bit, mark = 0x%x\n", fwx_ct_mark_get(ct));
 		}
 		
-		if (match_app_filter_rule(flow.app_id, client)) {
+		if (!flow.ignore && match_app_filter_rule(flow.app_id, client)) {
 			flow.drop = 1;
 			fwx_ct_set_bit(ct, FWX_CT_DROP_BIT, 1);
 			AF_LMT_INFO("##Drop App filter rule, appid = %d, mac = " MAC_FMT "\n", 

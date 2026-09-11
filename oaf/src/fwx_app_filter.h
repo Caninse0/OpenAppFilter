@@ -14,6 +14,11 @@
 #define MAX_APP_ID_PER_RULE 1024
 #define APPID_HASH_SIZE 256
 
+/* Custom rule (AdGuard style) appid range.
+ * Must stay in sync with CUSTOM_RULE_APPID_BASE in open-app-filter/src/fwx_custom_rule.h */
+#define AF_CUSTOM_RULE_APPID_BASE 30001
+#define AF_CUSTOM_RULE_APPID_MAX  65535
+
 extern u_int32_t g_appfilter_update_jiffies;
 
 typedef struct app_id_node {

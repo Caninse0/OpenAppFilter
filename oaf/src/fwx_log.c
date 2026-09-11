@@ -28,6 +28,7 @@ int g_feature_init = 0;
 char g_fwx_version[64] = FWX_VERSION;
 int g_feature_count = 0;
 char g_record_whitelist[1024] = {0};
+int g_custom_rule_only_mode = 0;
 
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(6, 12, 0))
 static int fwx_proc_record_whitelist_handler(struct ctl_table *table, int write,
@@ -175,7 +176,14 @@ static struct ctl_table fwx_table[] = {
 		.mode		= 0666,
 		.proc_handler	= proc_dointvec,
 	},
-		
+	{
+		.procname	= "custom_rule_only_mode",
+		.data		= &g_custom_rule_only_mode,
+		.maxlen 	= sizeof(int),
+		.mode		= 0666,
+		.proc_handler	= proc_dointvec,
+	},
+
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(6, 12, 0))
 	{
 	}
