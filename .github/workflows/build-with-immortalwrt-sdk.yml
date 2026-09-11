@@ -1,0 +1,375 @@
+#
+# Copyright (c) 2026 OpenAppFilter
+# Description: 手动构建 OpenAppFilter 三件套（kmod-oaf / appfilter / luci-app-oaf）
+#
+# 用 ImmortalWrt 官方 SDK 构建，产物是 .apk（ImmortalWrt 25.12 起使用 apk 而非 opkg）。
+#
+# 【重要】kmod-oaf 是内核模块，只能装到「内核版本 + 编译指纹完全一致」的固件上。
+# ImmortalWrt 每个小版本的内核都不同，例如 rockchip/armv8：
+#   25.12.1 -> 6.12.94
+#   25.12.2 -> 6.12.103
+# 构建前请先在设备上执行 `uname -r`，确认与这里选的版本一致。
+# 产物的 build_info.txt 里会记录 SDK 的 Kernel Version 和 vermagic，可直接比对。
+#
+name: "Auto compile with immortalwrt sdk"
+
+on:
+  # push:
+  #   branches: [ "master" ]
+  workflow_dispatch:
+    inputs:
+      immortalwrt_version:
+        description: 'ImmortalWrt 版本，必须与设备固件版本一致（先用 uname -r 核对内核）'
+        required: true
+        default: '25.12.2'
+        type: choice
+        options:
+          - snapshots
+          - 25.12.2
+          - 25.12.1
+          - 25.12.0
+
+      target:
+        description: 'Target platform (target/subtarget), e.g. rockchip/armv8'
+        required: true
+        default: 'rockchip/armv8'
+        type: choice
+        options:
+          - x86/64
+          - x86/generic
+          - rockchip/armv8
+          - ramips/mt7621
+          - ramips/mt76x8
+          - mediatek/mt7622
+          - mediatek/filogic
+          - ipq40xx/generic
+          - ipq807x/generic
+          - bcm27xx/bcm2711
+          - mvebu/cortexa53
+          - mvebu/cortexa72
+          - sunxi/cortexa53
+          - ath79/generic
+          - octeon/generic
+      custom_sdk_url:
+        description: '自定义 ImmortalWrt SDK URL（填写后忽略上面的版本/target，用于列表外的平台）'
+        required: false
+        default: ''
+      release_tag:
+        description: '把产物上传到该 GitHub Release tag（留空则只作为 artifacts）'
+        required: false
+        default: ''
+      ssh:
+        description: 'SSH connection to Actions for debugging'
+        required: false
+        default: 'false'
+        type: choice
+        options:
+          - 'false'
+          - 'true'
+
+env:
+  TZ: Asia/Shanghai
+
+permissions:
+  contents: write
+  actions: write
+
+jobs:
+  job_build:
+    name: Build OAF [${{ inputs.target || 'rockchip/armv8' }} / ${{ inputs.immortalwrt_version || '25.12.2' }}]
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    steps:
+      - name: Install packages
+        run: |
+          sudo -E rm -rf /usr/share/dotnet /etc/mysql /etc/php /usr/local/lib/android
+          echo "Install packages"
+          sudo -E apt-get -qq update
+          sudo -E apt-get -qq install ack antlr3 asciidoc autoconf automake autopoint binutils bison build-essential \
+            bzip2 ccache clang cmake cpio curl device-tree-compiler ecj fastjar flex gawk gettext gcc-multilib \
+            g++-multilib git gnutls-dev gperf haveged help2man intltool lib32gcc-s1 libc6-dev-i386 libelf-dev \
+            libglib2.0-dev libgmp3-dev libltdl-dev libmpc-dev libmpfr-dev libncurses-dev libpython3-dev \
+            libreadline-dev libssl-dev libtool libyaml-dev libz-dev lld llvm lrzsz mkisofs msmtp nano \
+            ninja-build p7zip p7zip-full patch pkgconf python3 python3-pip python3-ply python3-docutils \
+            python3-pyelftools qemu-utils re2c rsync scons squashfs-tools subversion swig texinfo uglifyjs \
+            upx-ucl unzip vim wget xmlto xxd zlib1g-dev zstd
+          sudo -E apt-get -qq autoremove --purge
+          sudo -E apt-get -qq clean
+
+      - name: Checkout
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 1
+
+      - name: Resolve ImmortalWrt SDK URL
+        id: sdk
+        run: |
+          if [ -n "${{ inputs.custom_sdk_url }}" ]; then
+            sdk_url="${{ inputs.custom_sdk_url }}"
+            echo "Using custom SDK URL"
+          else
+            IWRT_VERSION="${{ inputs.immortalwrt_version || '25.12.2' }}"
+            IWRT_TARGET="${{ inputs.target || 'rockchip/armv8' }}"
+            echo "IWRT_VERSION=${IWRT_VERSION}" >> "$GITHUB_ENV"
+            echo "IWRT_TARGET=${IWRT_TARGET}" >> "$GITHUB_ENV"
+            if [ "${IWRT_VERSION}" = "snapshots" ]; then
+              base_url="https://downloads.immortalwrt.org/${IWRT_VERSION}/targets/${IWRT_TARGET}/"
+            else
+              base_url="https://downloads.immortalwrt.org/releases/${IWRT_VERSION}/targets/${IWRT_TARGET}/"
+            fi
+            sdk_file=$(curl -s "$base_url" | grep -oE 'immortalwrt-sdk-[^"<>]*\.tar\.(zst|xz)' | sort -u | tail -n1)
+            if [ -z "$sdk_file" ]; then
+              echo "::error::No ImmortalWrt SDK found at $base_url, check version/target or provide a custom SDK URL."
+              exit 1
+            fi
+            sdk_url="${base_url}${sdk_file}"
+          fi
+          echo "SDK_URL=${sdk_url}" >> "$GITHUB_ENV"
+          echo "SDK_FILE=$(basename "${sdk_url}")" >> "$GITHUB_ENV"
+          echo "选用的 SDK: ${sdk_url}"
+
+      - name: Download and extract SDK
+        run: |
+          wget -q "$SDK_URL"
+          mkdir sdk
+          file_name="$SDK_FILE"
+          if [[ $file_name == *.tar.xz ]]; then
+            sudo tar -xJf "$file_name" -C ./sdk --strip-components=1
+          elif [[ $file_name == *.tar.zst ]]; then
+            sudo tar --zstd -x -f "$file_name" -C ./sdk --strip-components=1
+          else
+            echo "::error::Unsupported SDK format: $file_name"
+            exit 1
+          fi
+          echo "SDK extracted"
+
+      - name: Configure feeds
+        run: |
+          sudo chmod 777 -R sdk
+          cd sdk
+          # 注意：这里刻意「不做」OpenWrt 流水线里那两步 feed 改写。
+          # ImmortalWrt SDK 自带的 feeds.conf.default 已经指向它自己的 fork：
+          #   src-git packages https://github.com/immortalwrt/packages.git;openwrt-25.12
+          #   src-git luci     https://github.com/immortalwrt/luci.git;openwrt-25.12
+          # 而 OpenWrt 流水线那两条 sed 匹配的是 git.openwrt.org 和
+          # github.com/openwrt/(packages|luci).git，对 ImmortalWrt 的 URL 根本不匹配（本来就是
+          # 空操作）；万一匹配上，反而会把 ImmortalWrt 的 fork 换成 OpenWrt 官方分支，属于错误行为。
+          # 所以这里保持 ImmortalWrt 原样 feeds 不动。
+          echo "===== feeds.conf.default (SDK default, kept unchanged) ====="
+          cat feeds.conf.default
+
+          # 把当前 checkout 作为本地 feed 挂进来（构建的就是当前仓库的代码）
+          echo "src-link oaf $GITHUB_WORKSPACE" >> feeds.conf.default
+          echo "===== feeds.conf.default (with local oaf feed) ====="
+          cat feeds.conf.default
+          ./scripts/feeds update -a
+          ./scripts/feeds update -i
+          ./scripts/feeds install -a
+
+      - name: Configure .config
+        run: |
+          cd sdk
+          # 三个包都显式打开，不依赖 defconfig 的依赖推导，避免静默少编出某个包
+          cat > .config <<'EOF'
+          CONFIG_PACKAGE_kmod-oaf=m
+          CONFIG_PACKAGE_appfilter=m
+          CONFIG_PACKAGE_luci-app-oaf=m
+          CONFIG_LUCI_LANG_zh_Hans=y
+          EOF
+          make defconfig
+          echo "===== 关键配置项 ====="
+          grep -E 'CONFIG_PACKAGE_(kmod-oaf|appfilter|luci-app-oaf)|CONFIG_LUCI_LANG_zh_Hans' .config || true
+          # 确认符号真的存在（不存在说明 feed 没挂上）
+          for sym in CONFIG_PACKAGE_kmod-oaf CONFIG_PACKAGE_appfilter CONFIG_PACKAGE_luci-app-oaf; do
+            if ! grep -q "^${sym}=" .config; then
+              echo "::error::${sym} 不在 .config 中，OAF feed 可能没有正确安装"
+              exit 1
+            fi
+          done
+
+      - name: Show target kernel version
+        run: |
+          cd sdk
+          kernel_ver=$(grep -m1 '^LINUX_VERSION[[:space:]]*:=' include/kernel-version.mk | awk '{print $3}')
+          kernel_rel=$(grep -m1 '^LINUX_RELEASE[[:space:]]*:=' include/kernel-version.mk | awk '{print $3}')
+          [ -z "$kernel_ver" ] && kernel_ver="unknown"
+          [ -z "$kernel_rel" ] && kernel_rel="unknown"
+          echo "KERNEL_VER=${kernel_ver}" >> "$GITHUB_ENV"
+          echo "KERNEL_REL=${kernel_rel}" >> "$GITHUB_ENV"
+          echo "=============================================="
+          echo "本次 SDK 的内核版本: ${kernel_ver}-${kernel_rel}"
+          echo "设备必须满足 uname -r 与本内核版本一致，kmod-oaf 才能加载。"
+          echo "=============================================="
+
+      - name: SSH connection to Actions
+        uses: mxschmitt/action-tmate@v3
+        if: inputs.ssh == 'true'
+
+      - name: Compile OAF packages
+        id: compile
+        run: |
+          cd sdk
+          if [ ! -d package/feeds/oaf ]; then
+            echo "::error::OAF feed is not installed. Check the 'Configure feeds' step log."
+            exit 1
+          fi
+
+          echo "========== compile kmod-oaf =========="
+          sudo make package/oaf/compile -j$(nproc) V=s || sudo make package/oaf/compile -j1 V=s
+          echo "========== compile appfilter (oafd) =========="
+          sudo make package/open-app-filter/compile -j$(nproc) V=s || sudo make package/open-app-filter/compile -j1 V=s
+          echo "========== compile luci-app-oaf =========="
+          sudo make package/luci-app-oaf/compile -j$(nproc) V=s || sudo make package/luci-app-oaf/compile -j1 V=s
+          sudo chmod 777 -R .
+          echo "status=success" >> "$GITHUB_OUTPUT"
+
+      - name: Verify packages
+        id: verify
+        if: steps.compile.outputs.status == 'success'
+        run: |
+          cd sdk
+          if [ ! -d bin/packages ]; then
+            echo "::error::bin/packages not found - no package was produced. Look at the 'Compile OAF packages' step log for the real make error."
+            exit 1
+          fi
+
+          echo "===== 1) 三个包必须都产出 ====="
+          missing=0
+          for pat in "kmod-oaf-*.apk" "appfilter-*.apk" "luci-app-oaf-*.apk"; do
+            if find bin/packages bin/targets -type f -name "$pat" | grep -q .; then
+              find bin/packages bin/targets -type f -name "$pat" | sed 's/^/  找到: /'
+            else
+              echo "::error::缺少产物: $pat"
+              missing=1
+            fi
+          done
+          if [ "$missing" -ne 0 ]; then
+            echo "::error::有包没有编出来，本次构建不视为成功（避免只出两个包却显示绿）。"
+            exit 1
+          fi
+
+          echo "===== 2) 内核模块必须真的编出来 ====="
+          ko=$(find build_dir -type f -name 'oaf.ko' 2>/dev/null | head -n1)
+          if [ -n "$ko" ]; then
+            echo "  找到模块: $ko"
+            ls -l "$ko"
+            modinfo "$ko" 2>/dev/null | grep -E '^(filename|vermagic|depends):' || true
+          else
+            echo "::warning::在 build_dir 里没有找到 oaf.ko，下面用 kmod apk 的体积来判定包是否为空"
+          fi
+
+          echo "===== 3) 记录 vermagic（模块加载时会和 uname -r 对比这个值）====="
+          vermagic=""
+          vf=$(find build_dir -type f -name '.vermagic' 2>/dev/null | head -n1)
+          if [ -n "$vf" ]; then
+            vermagic=$(cat "$vf")
+          elif [ -n "$ko" ] && command -v modinfo >/dev/null 2>&1; then
+            vermagic=$(modinfo "$ko" 2>/dev/null | awk '/^vermagic:/{print $2}')
+          fi
+          [ -z "$vermagic" ] && vermagic="unknown"
+          echo "VERMAGIC=${vermagic}" >> "$GITHUB_ENV"
+          echo "  vermagic: ${vermagic}"
+
+          echo "===== 4) kmod apk 体积（这是判定空包最可靠的信号）====="
+          kmod_apk=$(find bin/packages bin/targets -type f -name 'kmod-oaf-*.apk' | head -n1)
+          echo "  $(basename "$kmod_apk")"
+          ls -l "$kmod_apk"
+          size=$(stat -c %s "$kmod_apk" 2>/dev/null || echo 0)
+          if [ "$size" -lt 5120 ]; then
+            echo "::error::kmod-oaf 包只有 ${size} 字节，说明 oaf.ko 没有被打进包里（空包）。"
+            echo "::error::请检查 kmod-oaf 的编译日志中是否有 'module ... is missing' 或安装阶段的报错。"
+            exit 1
+          fi
+          echo "  体积正常（${size} 字节），oaf.ko 应该在包里"
+
+          # kmod 包名里带内核版本，用它兜底补上 KERNEL_VER
+          if [ "${KERNEL_VER:-unknown}" = "unknown" ] && [ -n "$kmod_apk" ]; then
+            kver=$(basename "$kmod_apk" | sed -E 's/^kmod-oaf-([0-9]+\.[0-9]+\.[0-9]+).*/\1/')
+            echo "KERNEL_VER=${kver}" >> "$GITHUB_ENV"
+          fi
+          echo "status=success" >> "$GITHUB_OUTPUT"
+
+      - name: Organize artifacts
+        id: organize
+        if: steps.verify.outputs.status == 'success'
+        run: |
+          cd sdk
+          mkdir -p upload
+
+          # kmod-oaf 位于 bin/targets/<target>/<subtarget>/packages/ 下
+          # appfilter/luci-app-oaf 位于 bin/packages/<arch>/<feed>/ 下
+          # apk 包名使用连字符(-)而非下划线(_)分隔版本号
+          find bin/packages bin/targets -type f \( \
+            -name "kmod-oaf-*.apk" \
+            -o -name "*appfilter-*.apk" \
+            -o -name "luci-app-oaf-*.apk" \
+            -o -name "luci-i18n-oaf-*.apk" \
+          \) -exec cp {} upload/ \;
+          echo "Built packages:"
+          ls -la upload/
+
+          IWRT_VERSION="${{ inputs.immortalwrt_version || '25.12.2' }}"
+          IWRT_TARGET="${{ inputs.target || 'rockchip/armv8' }}"
+          cat > upload/build_info.txt <<EOF
+          Repository: ${{ github.repository }} @ ${{ github.sha }}
+          Built At: $(date -u +"%Y-%m-%d %H:%M:%S UTC")
+          ImmortalWrt Version: ${IWRT_VERSION}
+          Target: ${IWRT_TARGET}
+          Kernel Version: ${KERNEL_VER:-unknown}-${KERNEL_REL:-unknown}
+          Kernel Vermagic: ${VERMAGIC:-unknown}
+          SDK URL: ${SDK_URL}
+          Packages: kmod-oaf (kernel DPI module), appfilter (oafd daemon), luci-app-oaf (LuCI UI)
+
+          ===== 安装前请先核对（重要）=====
+          kmod-oaf 只能装到内核完全一致的固件上。请在设备上执行：
+            uname -r
+          并与上面的 Kernel Version / Kernel Vermagic 比对；不一致时 apk 会拒绝安装，
+          强制安装后 modprobe 也会报 version magic 错误。
+
+          安装：
+            apk add --allow-untrusted ./kmod-oaf-*.apk ./appfilter-*.apk ./luci-app-oaf-*.apk ./luci-i18n-oaf-*.apk
+
+          安装后建议重启一次（kmod-oaf 通过 /etc/modules.d/ 自动加载），然后：
+            lsmod | grep oaf
+            apk info -L kmod-oaf
+            /etc/init.d/appfilter restart
+            ubus call service list "{'name':'appfilter'}"
+          EOF
+
+          apk_count=$(ls upload/*.apk 2>/dev/null | wc -l)
+          if [ "$apk_count" -eq 0 ]; then
+            echo "::error::No apk packages were built, check the compile step output."
+            exit 1
+          fi
+
+          target_safe=$(echo "${IWRT_TARGET}" | tr '/' '-')
+          echo "TARGET_SAFE=$target_safe" >> "$GITHUB_ENV"
+          echo "status=success" >> "$GITHUB_OUTPUT"
+
+      - name: Upload artifacts
+        if: steps.organize.outputs.status == 'success'
+        uses: actions/upload-artifact@v4
+        with:
+          # 名字里带上内核版本，方便一眼判断和自己设备是否匹配
+          name: oaf-${{ env.TARGET_SAFE }}-${{ inputs.immortalwrt_version || '25.12.2' }}-k${{ env.KERNEL_VER }}
+          path: |
+            sdk/upload/*.apk
+            sdk/upload/build_info.txt
+          if-no-files-found: error
+
+      - name: Upload to GitHub Release
+        if: steps.organize.outputs.status == 'success' && inputs.release_tag != ''
+        uses: softprops/action-gh-release@v3
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: ${{ inputs.release_tag }}
+          files: |
+            sdk/upload/*.apk
+            sdk/upload/build_info.txt
+          body: |
+            OpenAppFilter packages built with ImmortalWrt SDK
+            - ImmortalWrt: ${{ inputs.immortalwrt_version || '25.12.2' }}
+            - Target: ${{ inputs.target || 'rockchip/armv8' }}
+            - Kernel: ${{ env.KERNEL_VER }} (vermagic ${{ env.VERMAGIC }})
+            - Commit: ${{ github.sha }}
