@@ -1987,6 +1987,12 @@ msgstr "仅自定义规则"
 msgid "Runs with App Filter"
 msgstr "随应用过滤运行"
 
+msgid "Stopped with App Filter"
+msgstr "随应用过滤停止"
+
+msgid "Runs independently"
+msgstr "独立运行"
+
 msgid "Rule Limit"
 msgstr "规则上限"
 
@@ -1996,11 +2002,14 @@ msgstr "当前剩余上限"
 msgid "valid rules"
 msgstr "条有效规则"
 
-msgid "It is calculated in this page as floor(available disk space bytes / (80 * 1000)); decimal units are used, so 1 MB = 1000 KB."
-msgstr "本页面按 floor(磁盘剩余可用字节数 / (80 * 1000)) 计算，使用十进制单位，即 1 MB = 1000 KB。"
+msgid "It is calculated in this page as floor((available disk space bytes - custom rule file bytes) / 80); decimal units are used, so 1 MB = 1000 KB; the limit is capped at %d rules."
+msgstr "本页面按 floor((磁盘剩余可用字节数 - 自定义规则文件占用字节数) / 80) 计算，使用十进制单位，即 1 MB = 1000 KB；上限最多 %d 条规则。"
+
+msgid "The calculated rule limit has changed. Saving will also apply it, just like Save & Apply."
+msgstr "计算出的规则上限已发生变动，点击保存时会同时应用，等同于“保存并应用”。"
 
 msgid "Rules (AdGuard Home Syntax)"
 msgstr "规则（AdGuard Home 语法）"
 
-msgid "One rule per line:<br/>||example.org^ - block example.org and all subdomains; * is allowed inside the domain<br/>@@||sub.example.org^ - allow sub.example.org and all its subdomains<br/>/REGEX/ - block domains matching the regular expression<br/>! comment or # comment - comment line<br/><br/>Notes: custom rules are matched before the feature library; allow (ignore) rules have higher priority than block rules; the rule must not contain # ; , [ or ]; the rule limit is calculated in this page as floor(available disk space bytes / (80 * 1000)), using decimal units where 1 MB = 1000 KB; changes take effect within a few seconds after saving."
-msgstr "每行一条规则：<br/>||example.org^ - 阻止 example.org 及其所有子域名；域名中允许使用 *<br/>@@||sub.example.org^ - 放行 sub.example.org 及其所有子域名<br/>/REGEX/ - 阻止匹配该正则表达式的域名<br/>! comment 或 # comment - 注释行<br/><br/>说明：自定义规则优先于特征库匹配；放行规则优先级高于阻止规则；规则中不能包含 #、;、,、[ 或 ]；规则上限在本页面按 floor(磁盘剩余可用字节数 / (80 * 1000)) 计算，使用十进制单位，即 1 MB = 1000 KB；保存后几秒内生效。"
+msgid "One rule per line:<br/>||example.org^ - block example.org and all subdomains; * is allowed inside the domain<br/>@@||sub.example.org^ - allow sub.example.org and all its subdomains<br/>/REGEX/ - block domains matching the regular expression<br/>! comment or # comment - comment line<br/><br/>Notes: custom rules are matched before the feature library; allow (ignore) rules have higher priority than block rules; the rule must not contain # ; , [ or ]; the rule limit is calculated in this page as floor((available disk space bytes - custom rule file bytes) / 80), using decimal units where 1 MB = 1000 KB; the limit is capped at %d rules; changes take effect within a few seconds after saving."
+msgstr "每行一条规则：<br/>||example.org^ - 阻止 example.org 及其所有子域名；域名中允许使用 *<br/>@@||sub.example.org^ - 放行 sub.example.org 及其所有子域名<br/>/REGEX/ - 阻止匹配该正则表达式的域名<br/>! comment 或 # comment - 注释行<br/><br/>说明：自定义规则优先于特征库匹配；放行规则优先级高于阻止规则；规则中不能包含 #、;、,、[ 或 ]；规则上限在本页面按 floor((磁盘剩余可用字节数 - 自定义规则文件占用字节数) / 80) 计算，使用十进制单位，即 1 MB = 1000 KB；上限最多 %d 条规则；保存后几秒内生效。"
