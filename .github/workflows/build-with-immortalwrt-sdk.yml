@@ -11,6 +11,11 @@
 # 构建前请先在设备上执行 `uname -r`，确认与这里选的版本一致。
 # 产物的 build_info.txt 里会记录 SDK 的 Kernel Version 和 vermagic，可直接比对。
 #
+# 【重要】ImmortalWrt 的 packages feed 里自带 net/open-app-filter（上游 OAF 旧代码），
+# 它与本仓库的 oaf/ 和 open-app-filter/ 完全重名。如果不剔除，编出来的是 feed 的旧版
+# kmod-oaf/appfilter + 本仓库的新版 luci-app-oaf，装上去必然跑不起来。
+# 见 "Configure feeds" 与 "Verify packages" 两步的处理。
+#
 name: "Auto compile with immortalwrt sdk"
 
 on:
@@ -164,7 +169,43 @@ jobs:
           cat feeds.conf.default
           ./scripts/feeds update -a
           ./scripts/feeds update -i
+
+          # ===== 关键：剔除 ImmortalWrt packages feed 里自带的同名 OAF 包 =====
+          # ImmortalWrt 的 packages feed 里有 net/open-app-filter，它从
+          # github.com/destan19/OpenAppFilter.git 拉上游代码，并且同样定义了：
+          #     KernelPackage/oaf   -> kmod-oaf
+          #     Package/appfilter
+          # 与本地 feed 的 oaf/ 和 open-app-filter/ 完全重名。
+          # 不剔除的话，feeds 安装时它会把本仓库的 open-app-filter 顶掉，
+          # 结果 kmod-oaf / appfilter 编出来是上游旧版（内核模块自报 v5.3，
+          # 用 /proc/sys/oaf + /tmp/feature.cfg），而 luci-app-oaf 来自本仓库
+          # （用 /proc/sys/fwx + /etc/fwxd/feature.bin）—— 版本错配，装上去必然跑不起来。
+          # OpenWrt 官方 packages feed 没有这个包，所以 OpenWrt 那条流水线不受影响。
+          if [ -d feeds/packages/net/open-app-filter ]; then
+            echo "发现 ImmortalWrt feed 自带的 open-app-filter，移除它，强制使用本仓库版本"
+            rm -rf feeds/packages/net/open-app-filter
+            if [ -f feeds/packages.index ]; then
+              sed -i '\|net/open-app-filter|d' feeds/packages.index
+            fi
+          fi
+
           ./scripts/feeds install -a
+          # 再用本仓库 feed 强制覆盖安装这三个包
+          ./scripts/feeds install -f -p oaf oaf open-app-filter luci-app-oaf || true
+
+          echo "===== package/ 下 OAF 包的指向 ====="
+          ls -l package/oaf package/open-app-filter package/luci-app-oaf 2>&1 || true
+
+          # 记录本仓库期望的版本，verify 步骤用它断言产物不是 feed 的旧版
+          exp_oaf=$(sed -n 's/^PKG_VERSION[[:space:]]*:=[[:space:]]*//p' "$GITHUB_WORKSPACE/oaf/Makefile" | head -n1 | tr -d ' \r')
+          exp_af=$(sed -n 's/^PKG_VERSION[[:space:]]*:=[[:space:]]*//p' "$GITHUB_WORKSPACE/open-app-filter/Makefile" | head -n1 | tr -d ' \r')
+          exp_luci=$(sed -n 's/^PKG_VERSION[[:space:]]*:=[[:space:]]*//p' "$GITHUB_WORKSPACE/luci-app-oaf/Makefile" | head -n1 | tr -d ' \r')
+          echo "本仓库版本: oaf=${exp_oaf} appfilter=${exp_af} luci-app-oaf=${exp_luci}"
+          {
+            echo "EXP_OAF=${exp_oaf}"
+            echo "EXP_AF=${exp_af}"
+            echo "EXP_LUCI=${exp_luci}"
+          } >> "$GITHUB_ENV"
 
       - name: Configure .config
         run: |
@@ -247,6 +288,26 @@ jobs:
             echo "::error::有包没有编出来，本次构建不视为成功（避免只出两个包却显示绿）。"
             exit 1
           fi
+
+          echo "===== 1b) 版本必须是本仓库的，不能是 ImmortalWrt feed 自带的旧版 OAF ====="
+          for spec in "kmod-oaf:${EXP_OAF}" "appfilter:${EXP_AF}" "luci-app-oaf:${EXP_LUCI}"; do
+            pkg="${spec%%:*}"
+            ver="${spec##*:}"
+            apkfile=$(find bin/packages bin/targets -type f -name "${pkg}-*.apk" | head -n1)
+            base=$(basename "$apkfile")
+            echo "  ${base}  (本仓库期望版本: ${ver})"
+            case "$base" in
+              *"~"*)
+                echo "::error::${base} 的版本号里带 '~'，这是 ImmortalWrt feed 里上游旧版 OAF 的版本格式，"
+                echo "::error::说明编出来的不是本仓库的代码。请检查 'Configure feeds' 步骤是否成功剔除了 feeds/packages/net/open-app-filter。"
+                exit 1
+                ;;
+            esac
+            if [ -n "$ver" ] && ! echo "$base" | grep -q "$ver"; then
+              echo "::error::${base} 中不含本仓库期望的版本 ${ver}，产物与源码不匹配。"
+              exit 1
+            fi
+          done
 
           echo "===== 2) 内核模块必须真的编出来 ====="
           ko=$(find build_dir -type f -name 'oaf.ko' 2>/dev/null | head -n1)
