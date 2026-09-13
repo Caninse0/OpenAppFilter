@@ -29,6 +29,7 @@ char g_fwx_version[64] = FWX_VERSION;
 int g_feature_count = 0;
 char g_record_whitelist[1024] = {0};
 int g_custom_rule_only_mode = 0;
+int g_skip_udp_dns_drop = 0;
 
 #if (LINUX_VERSION_CODE < KERNEL_VERSION(6, 12, 0))
 static int fwx_proc_record_whitelist_handler(struct ctl_table *table, int write,
@@ -109,6 +110,13 @@ static struct ctl_table fwx_table[] = {
 	{
 		.procname	= "tcp_rst",
 		.data		= &g_tcp_rst,
+		.maxlen 	= sizeof(int),
+		.mode		= 0666,
+		.proc_handler	= proc_dointvec,
+	},
+	{
+		.procname	= "skip_udp_dns_drop",
+		.data		= &g_skip_udp_dns_drop,
 		.maxlen 	= sizeof(int),
 		.mode		= 0666,
 		.proc_handler	= proc_dointvec,

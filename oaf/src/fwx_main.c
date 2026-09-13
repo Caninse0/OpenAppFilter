@@ -2164,6 +2164,25 @@ static int af_should_send_tcp_rst(struct sk_buff *skb, flow_info_t *flow)
 	return 1;
 }
 
+/* A dropped UDP DNS query is silent: the client gets no answer at all and has
+ * to wait for the resolver timeout, which looks like a very slow lookup that
+ * finally fails. af_should_send_tcp_rst() has no UDP counterpart, so when the
+ * skip switch is on matching UDP DNS queries are forwarded instead of dropped
+ * and the client gets a normal answer. */
+static int af_should_skip_udp_dns(flow_info_t *flow)
+{
+	if (!g_skip_udp_dns_drop || !flow)
+		return 0;
+
+	if (flow->l4_protocol != IPPROTO_UDP)
+		return 0;
+
+	if (flow->dport != DNS_PORT)
+		return 0;
+
+	return 1;
+}
+
 static void af_send_tcp_reset(struct sk_buff *skb)
 {
 #if LINUX_VERSION_CODE > KERNEL_VERSION(5,10,197)
@@ -2338,11 +2357,16 @@ u_int32_t fwx_hook_bypass_handle(struct sk_buff *skb, struct net_device *dev)
 			if (!conn->ignore && !is_record_whitelist)
 				af_update_active_app_list(client, &flow);
 			if (!conn->ignore && match_app_filter_rule(flow.app_id, client)) {
-				flow.drop = 1;
-				conn->drop = 1;
-				AF_LMT_INFO("##Drop App filter rule, appid = %d, mac = " MAC_FMT "\n", 
-						flow.app_id, MAC_ARRAY(client->mac));
-				send_reset_packet(skb, &flow);
+				if (af_should_skip_udp_dns(&flow)) {
+					AF_LMT_INFO("##Skip UDP DNS drop, appid = %d, mac = " MAC_FMT "\n",
+							flow.app_id, MAC_ARRAY(client->mac));
+				} else {
+					flow.drop = 1;
+					conn->drop = 1;
+					AF_LMT_INFO("##Drop App filter rule, appid = %d, mac = " MAC_FMT "\n", 
+							flow.app_id, MAC_ARRAY(client->mac));
+					send_reset_packet(skb, &flow);
+				}
 			}
 		}
 		
@@ -2547,13 +2571,18 @@ u_int32_t fwx_hook_gateway_handle(struct sk_buff *skb, struct net_device *dev)
 		}
 		
 		if (!flow.ignore && match_app_filter_rule(flow.app_id, client)) {
-			flow.drop = 1;
-			fwx_ct_set_bit(ct, FWX_CT_DROP_BIT, 1);
-			AF_LMT_INFO("##Drop App filter rule, appid = %d, mac = " MAC_FMT "\n", 
-					flow.app_id, MAC_ARRAY(client->mac));
-			if (af_should_send_tcp_rst(skb, &flow))
-				af_send_tcp_reset(skb);
-			ret = NF_DROP;
+			if (af_should_skip_udp_dns(&flow)) {
+				AF_LMT_INFO("##Skip UDP DNS drop, appid = %d, mac = " MAC_FMT "\n",
+						flow.app_id, MAC_ARRAY(client->mac));
+			} else {
+				flow.drop = 1;
+				fwx_ct_set_bit(ct, FWX_CT_DROP_BIT, 1);
+				AF_LMT_INFO("##Drop App filter rule, appid = %d, mac = " MAC_FMT "\n", 
+						flow.app_id, MAC_ARRAY(client->mac));
+				if (af_should_send_tcp_rst(skb, &flow))
+					af_send_tcp_reset(skb);
+				ret = NF_DROP;
+			}
 		}
 	}
 	

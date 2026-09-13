@@ -1846,6 +1846,9 @@ msgstr "设置"
 msgid "Show"
 msgstr "显示"
 
+msgid "Skip UDP DNS Blocking"
+msgstr "跳过UDP DNS拦截"
+
 msgid "Subscription service is unavailable"
 msgstr "订阅服务暂不可用"
 
@@ -1917,6 +1920,9 @@ msgstr "访问"
 
 msgid "When the Key is empty, the free version can be used. After setting the Key, the premium version can be used. The premium version supports more applications, is updated regularly, and the latest supported application list can be viewed on the official website."
 msgstr "Key为空可以使用免费版本，设置Key后可以使用高级版本，高级版本支持的应用更多，定期更新，最新支持的应用列表可以在官网查看。"
+
+msgid "When the switch is off, UDP DNS requests matching a rule are dropped and the client has to wait for the resolver timeout. When the switch is on, matching UDP DNS requests are not dropped, and are sent, received and forwarded normally."
+msgstr "开关关闭时，符合规则的udp dns请求会被丢弃，需要等待超时；开关打开时，符合规则的udp dns请求不会被丢弃，而是会被正常发送接收转发"
 
 msgid "Parental Control"
 msgstr "OAF行为管理"

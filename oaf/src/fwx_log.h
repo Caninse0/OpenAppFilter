@@ -17,6 +17,7 @@ extern char g_lan_ifname[64];
 extern int g_tcp_rst;
 extern int g_feature_count;
 extern int g_custom_rule_only_mode;
+extern int g_skip_udp_dns_drop;
 
 #define TEST_MODE() (fwx_test_mode)
 int af_log_init(void);

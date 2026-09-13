@@ -177,6 +177,16 @@ local has_access_control = nfs.access("/etc/config/macfilter")
                     <div class="form-desc-inline"><%:After enabled, related acceleration modules will be automatically disabled, including hardware acceleration, software acceleration and others, to prevent filtering failures caused by acceleration. It is recommended to restart the device after modification.%></div>
                 </div>
             </div>
+            <div class="form-row">
+                <label class="form-label" for="skip-udp-dns-drop"><%:Skip UDP DNS Blocking%></label>
+                <div class="settings-field">
+                    <label class="switch">
+                        <input type="checkbox" id="skip-udp-dns-drop">
+                        <span class="slider"></span>
+                    </label>
+                    <div class="form-desc-inline"><%:When the switch is off, UDP DNS requests matching a rule are dropped and the client has to wait for the resolver timeout. When the switch is on, matching UDP DNS requests are not dropped, and are sent, received and forwarded normally.%></div>
+                </div>
+            </div>
         </div>
     </section>
 
@@ -339,6 +349,7 @@ local has_access_control = nfs.access("/etc/config/macfilter")
         <% end %>
         tasks.push(loadTask(api.advancedGet, function(data) {
             $('#disable-hnat').prop('checked', data.disable_hnat == 1);
+            $('#skip-udp-dns-drop').prop('checked', data.skip_udp_dns_drop == 1);
         }));
         tasks.push(loadTask(api.recordGet, applyRecordData));
 
@@ -409,7 +420,10 @@ local has_access_control = nfs.access("/etc/config/macfilter")
         <% if has_access_control then %>
         tasks.push(postTask(api.accessControlSet, {enable:$('#access-control-enable').is(':checked') ? 1 : 0}));
         <% end %>
-        tasks.push(postTask(api.advancedSet, {disable_hnat:$('#disable-hnat').is(':checked') ? 1 : 0}));
+        tasks.push(postTask(api.advancedSet, {
+            disable_hnat: $('#disable-hnat').is(':checked') ? 1 : 0,
+            skip_udp_dns_drop: $('#skip-udp-dns-drop').is(':checked') ? 1 : 0
+        }));
         tasks.push(postTask(api.recordSet, {
             enable:$('#rec-enable').is(':checked') ? 1 : 0,
             record_time:parseInt($('#rec-keep').val(), 10) || 0,

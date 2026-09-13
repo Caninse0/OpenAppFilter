@@ -113,12 +113,15 @@ end
 function set_advanced_settings()
 	local http = require "luci.http"
 	local disable_hnat = tonumber(http.formvalue("disable_hnat") or "0") or 0
+	local skip_udp_dns_drop = tonumber(http.formvalue("skip_udp_dns_drop") or "0") or 0
 
 	disable_hnat = disable_hnat == 1 and 1 or 0
+	skip_udp_dns_drop = skip_udp_dns_drop == 1 and 1 or 0
 
 	local resp = ubus_call("set_advanced_settings", {
 		data = {
-			disable_hnat = disable_hnat
+			disable_hnat = disable_hnat,
+			skip_udp_dns_drop = skip_udp_dns_drop
 		}
 	})
 

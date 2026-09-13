@@ -429,6 +429,13 @@ void init_system_config_to_proc(void) {
             work_mode = 0;
         }
         update_fwx_proc_u32_value("work_mode", work_mode);
+
+        int skip_udp_dns_drop = fwx_uci_get_int_value(ctx, "fwx.advanced.skip_udp_dns_drop");
+        if (skip_udp_dns_drop != 0 && skip_udp_dns_drop != 1) {
+            skip_udp_dns_drop = 0;
+        }
+        update_fwx_proc_u32_value("skip_udp_dns_drop", skip_udp_dns_drop);
+
         uci_free_context(ctx);
     }
 }

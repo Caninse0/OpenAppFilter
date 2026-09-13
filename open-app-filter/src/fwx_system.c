@@ -54,6 +54,20 @@ int fwx_get_disable_hnat(void)
     return disable_hnat == 1 ? 1 : 0;
 }
 
+int fwx_get_skip_udp_dns_drop(void)
+{
+    int skip_udp_dns_drop = 0;
+    struct uci_context *uci_ctx = uci_alloc_context();
+
+    if (!uci_ctx)
+        return 0;
+
+    skip_udp_dns_drop = fwx_uci_get_int_value(uci_ctx, "fwx.advanced.skip_udp_dns_drop");
+    uci_free_context(uci_ctx);
+
+    return skip_udp_dns_drop == 1 ? 1 : 0;
+}
+
 int fwx_get_notice_status(void)
 {
     int notice_status = 0;
@@ -225,6 +239,7 @@ struct json_object *fwx_api_get_advanced_settings(struct json_object *req_obj)
     struct json_object *data_obj = json_object_new_object();
 
     json_object_object_add(data_obj, "disable_hnat", json_object_new_int(fwx_get_disable_hnat()));
+    json_object_object_add(data_obj, "skip_udp_dns_drop", json_object_new_int(fwx_get_skip_udp_dns_drop()));
 
     return fwx_gen_api_response_data(API_CODE_SUCCESS, data_obj);
 }
@@ -232,7 +247,9 @@ struct json_object *fwx_api_get_advanced_settings(struct json_object *req_obj)
 struct json_object *fwx_api_set_advanced_settings(struct json_object *req_obj)
 {
     struct json_object *disable_hnat_obj;
+    struct json_object *skip_udp_dns_drop_obj;
     int disable_hnat;
+    int skip_udp_dns_drop;
     struct uci_context *uci_ctx;
 
     if (!req_obj)
@@ -245,6 +262,13 @@ struct json_object *fwx_api_set_advanced_settings(struct json_object *req_obj)
     }
 
     disable_hnat = json_object_get_int(disable_hnat_obj) == 1 ? 1 : 0;
+
+    /* keep the stored value when the caller does not send the new option */
+    skip_udp_dns_drop_obj = json_object_object_get(req_obj, "skip_udp_dns_drop");
+    skip_udp_dns_drop = skip_udp_dns_drop_obj ?
+        (json_object_get_int(skip_udp_dns_drop_obj) == 1 ? 1 : 0) :
+        fwx_get_skip_udp_dns_drop();
+
     uci_ctx = uci_alloc_context();
     if (!uci_ctx) {
         LOG_ERROR("Failed to allocate UCI context\n");
@@ -253,13 +277,17 @@ struct json_object *fwx_api_set_advanced_settings(struct json_object *req_obj)
 
     ensure_fwx_advanced_section(uci_ctx);
     fwx_uci_set_int_value(uci_ctx, "fwx.advanced.disable_hnat", disable_hnat);
+    fwx_uci_set_int_value(uci_ctx, "fwx.advanced.skip_udp_dns_drop", skip_udp_dns_drop);
     fwx_uci_commit(uci_ctx, "fwx");
     uci_free_context(uci_ctx);
 
     if (disable_hnat == 1)
         system("/usr/bin/hnat.sh >/dev/null 2>&1");
 
-    LOG_DEBUG("Set advanced settings: disable_hnat=%d\n", disable_hnat);
+    update_fwx_proc_u32_value("skip_udp_dns_drop", skip_udp_dns_drop);
+
+    LOG_DEBUG("Set advanced settings: disable_hnat=%d, skip_udp_dns_drop=%d\n",
+              disable_hnat, skip_udp_dns_drop);
     return fwx_gen_api_response_data(API_CODE_SUCCESS, NULL);
 }
 
