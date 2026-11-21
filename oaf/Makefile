@@ -16,7 +16,7 @@ define KernelPackage/oaf
   SUBMENU:=Netfilter Extensions
   TITLE:=OAF netfilter module
   FILES:=$(PKG_BUILD_DIR)/oaf.ko
-  DEPENDS:=+kmod-ipt-conntrack
+  DEPENDS:=+kmod-nf-conntrack +kmod-nf-reject
   KCONFIG:=
   AUTOLOAD:=$(call AutoLoad,09,$(PKG_AUTOLOAD))
 endef
@@ -26,6 +26,7 @@ define KernelPackage/oaf/description
 endef
 
 KCFLAGS := -Wno-error=missing-prototypes \
+           -Wno-error=strict-prototypes \
            -Wno-error=missing-declarations \
            -Wno-error=unused-variable \
            -Wno-error=declaration-after-statement \
